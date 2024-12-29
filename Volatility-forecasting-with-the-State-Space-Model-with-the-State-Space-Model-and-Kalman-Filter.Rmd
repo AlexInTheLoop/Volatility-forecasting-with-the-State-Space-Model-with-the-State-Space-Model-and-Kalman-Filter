@@ -1,0 +1,1376 @@
+---
+title: "Forecasting the Volatility of Cryptocurrencies in the Presence of COVID-19
+  with the State Space Model and Kalman Filter"
+author: "Alexandre"
+date: "2024-12-29"
+output: html_document
+---
+# PART 1: Environment set up
+## 1.1- Required packages installation
+
+```{r, include=TRUE}
+packages <- c(
+  "tseries", "zoo", "moments", "car", "MASS", "stats", "fGarch", 
+  "PerformanceAnalytics", "rugarch", "tidyverse", "xts", "forecast", 
+  "scales", "e1071", "xtable", "quantmod", "KFAS", "fpp2", "tidyquant",
+  "ggplot2", "kableExtra", "knitr"
+)
+
+install_and_load <- function(packages) {
+  for (pkg in packages) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  }
+}
+install_and_load(packages)
+```
+
+##1.2- Package required importation
+
+```{r cars}
+require("tseries")
+require("zoo")
+require("moments")
+require("car")
+require("MASS")
+require("stats")  
+require("fGarch")
+require("PerformanceAnalytics")
+require("rugarch")
+library(tidyverse)
+library(xts)
+library(forecast)
+library(scales)
+library(e1071)
+library(xtable)
+library(quantmod)
+library(KFAS)
+library(fpp2)
+library(tidyquant)
+
+library(ggplot2)
+library(kableExtra)
+library(knitr)
+```
+
+##1.3- Progamming environnement configuration
+
+```{r, echo=TRUE}
+setwd("C:/Users/rabhi/Documents/Master 272 IEF - Dauphine/M2/S1/Gestion quantitative/Soutenance/volatility_forecasting_project")
+
+rm(list=ls(all=TRUE)) # Remove objects from environment
+options(warn=-1)
+```
+
+# PART 2: Data importation and managamenet
+
+##2.1- Close prices et returns extraction
+
+**BTC/USD**
+
+```{r, echo=TRUE}
+BTC_h <- read.csv("BTC.csv")
+BTC_h$datetime <- as.POSIXct(BTC_h$unix, origin = "1970-01-01", tz = "GMT")
+
+start_date <- as.POSIXct("2020-02-26 00:00:00", tz = "GMT")
+end_date <- as.POSIXct("2021-04-18 00:00:00", tz = "GMT")
+
+filtered_data <- BTC_h[BTC_h$datetime >= start_date & BTC_h$datetime <= end_date, ]
+
+BTC_close <- ts(
+  filtered_data$close,
+  start = c(2020, as.numeric(format(start_date, "%j"))),
+  frequency = 24 * 365
+)
+
+BTC_returns <- diff(log(BTC_close))
+BTC_returns <- tail(BTC_returns,10000)
+```
+
+**ETH/USD**
+
+```{r, echo=TRUE}
+ETH_h <- read.csv("ETH.csv")
+ETH_h$datetime <- as.POSIXct(ETH_h$unix, origin = "1970-01-01", tz = "GMT")
+
+ETH_h <- ETH_h[order(ETH_h$datetime), ]
+
+filtered_data <- ETH_h[ETH_h$datetime >= start_date & ETH_h$datetime <= end_date, ]
+
+ETH_close <- ts(
+  filtered_data$close,
+  start = c(2020, as.numeric(format(start_date, "%j"))),
+  frequency = 24 * 365
+)
+
+ETH_returns <- diff(log(ETH_close))
+ETH_returns <- tail(ETH_returns,10000)
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+LTC_h <- read.csv("LTC.csv")
+LTC_h$datetime <- as.POSIXct(LTC_h$unix, origin = "1970-01-01", tz = "GMT")
+
+LTC_h <- LTC_h[order(LTC_h$datetime), ]
+
+filtered_data <- LTC_h[LTC_h$datetime >= start_date & LTC_h$datetime <= end_date, ]
+
+LTC_close <- ts(
+  filtered_data$close,
+  start = c(2020, as.numeric(format(start_date, "%j"))),
+  frequency = 24 * 365
+)
+
+LTC_returns <- diff(log(LTC_close))
+LTC_returns <- tail(LTC_returns,10000)
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+XRP_h <- read.csv("XRP.csv")
+XRP_h$datetime <- as.POSIXct(XRP_h$unix, origin = "1970-01-01", tz = "GMT")
+
+XRP_h <- XRP_h[order(XRP_h$datetime), ]
+
+filtered_data <- XRP_h[XRP_h$datetime >= start_date & XRP_h$datetime <= end_date, ]
+
+XRP_close <- ts(
+  filtered_data$close,
+  start = c(2020, as.numeric(format(start_date, "%j"))),
+  frequency = 24 * 365
+)
+
+XRP_returns <- diff(log(XRP_close))
+XRP_returns <- tail(XRP_returns,10000)
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+BCH_h <- read.csv("BCH.csv")
+BCH_h$datetime <- as.POSIXct(BCH_h$unix, origin = "1970-01-01", tz = "GMT")
+
+BCH_h <- BCH_h[order(BCH_h$datetime), ]
+
+filtered_data <- BCH_h[BCH_h$datetime >= start_date & BCH_h$datetime <= end_date, ]
+
+BCH_close <- ts(
+  filtered_data$close,
+  start = c(2020, as.numeric(format(start_date, "%j"))),
+  frequency = 24 * 365
+)
+
+BCH_returns <- diff(log(BCH_close))
+BCH_returns <- tail(BCH_returns,10000)
+```
+
+##2.2- Observed volatility extraction
+
+The centred log return is calculated by implying the following formula on the asset returns:
+\[
+r_t^* = \frac{r_t - \bar{r}}{\rho},
+\]
+where  $r_t$ is the log return, $\bar{r}$ is the mean of $r_t$, and
+\[
+\rho = \frac{\mu_{| r_t - \bar{r}|}}{\sigma_{r_t}}.
+\]
+where $\mu_{| r_t - \bar{r}|})$ is the mean of $| r_t - \bar{r}|$ and $\sigma_{r_t}$ is the standard deviation of $r_t$.
+
+```{r,echo=TRUE}
+observed_volatility <- function(returns) {
+  sigma_returns <- sd(returns)
+  excess_returns <- returns - mean(returns)
+  abs_excess_returns <- abs(excess_returns)
+  mu <- mean(abs_excess_returns)
+  rho <- mu / sigma_returns
+  observed_volatility <- ts(abs_excess_returns/rho)
+  return(observed_volatility)
+}
+```
+
+By using this function we can compute and then display the observed volatility of Bitcoin, Ether, Litecoin, Ripples and Bitcoin Cash.
+
+```{r,echo=TRUE}
+BTC_observed_volatility <- observed_volatility(BTC_returns)
+plot(BTC_observed_volatility, 
+     main = "Observed Volatility of Bitcoin\n(2020/02/26-2021/04/18)", 
+     xlab = "Time in hours", 
+     ylab = "Observed volatility", 
+     col = "red", 
+     lwd = 2)
+```
+
+```{r, echo=TRUE}
+ETH_observed_volatility <- observed_volatility(ETH_returns)
+plot(ETH_observed_volatility, 
+     main = "Observed Volatility of Ether\n(2020/02/26-2021/04/18)", 
+     xlab = "Time in hours", 
+     ylab = "Observed volatility", 
+     col = "red", 
+     lwd = 2)
+```
+
+
+```{r, echo=TRUE}
+LTC_observed_volatility <- observed_volatility(LTC_returns)
+plot(LTC_observed_volatility, 
+     main = "Observed Volatility of Litecoin\n(2020/02/26-2021/04/18)", 
+     xlab = "Time in hours", 
+     ylab = "Observed volatility", 
+     col = "red", 
+     lwd = 2)
+```
+
+
+```{r, echo=TRUE}
+XRP_observed_volatility <- observed_volatility(XRP_returns)
+plot(XRP_observed_volatility, 
+     main = "Observed Volatility of Ripples\n(2020/02/26-2021/04/18)", 
+     xlab = "Time in hours", 
+     ylab = "Observed volatility", 
+     col = "red", 
+     lwd = 2)
+```
+
+```{r, echo=TRUE}
+BCH_observed_volatility <- observed_volatility(BCH_returns)
+plot(BCH_observed_volatility, 
+     main = "Observed Volatility of Bitcoin Cash\n(2020/02/26-2021/04/18)", 
+     xlab = "Time in hours", 
+     ylab = "Observed volatility", 
+     col = "red", 
+     lwd = 2)
+```
+
+##2.3- Descriptive statistics computations
+
+We create a function to calculate the core descriptive statistics of a time series of returns.
+
+```{r,echo=TRUE}
+descriptive_statistics <- function(returns) {
+  returns_skewness <- skewness(returns, na.rm = TRUE, type = 1)
+  returns_std <- sd(returns, na.rm = TRUE)
+  returns_kurtosis <- kurtosis(returns, na.rm = TRUE, type = 1)
+  returns_maximum <- max(returns, na.rm = TRUE)
+  returns_minimum <- min(returns, na.rm = TRUE)
+  returns_mean <- mean(returns, na.rm = TRUE)
+  returns_median <- median(returns, na.rm = TRUE)
+  
+  return(c(
+    Maximum = returns_maximum,
+    Minimum = returns_minimum,
+    Mean = returns_mean,
+    Median = returns_median,
+    `Standard Deviation` = returns_std,
+    Skewness = returns_skewness,
+    Kurtosis = returns_kurtosis
+  ))
+}
+
+```
+
+Now we can compute the statistics of the different cryptocurrencies and display them in a table.
+
+```{r, echo=TRUE}
+BTC_stats <- descriptive_statistics(BTC_returns)
+ETH_stats <- descriptive_statistics(ETH_returns)
+LTC_stats <- descriptive_statistics(LTC_returns)
+XRP_stats <- descriptive_statistics(XRP_returns)
+BCH_stats <- descriptive_statistics(BCH_returns)
+
+crypto_stats <- data.frame(
+  rbind(BTC_stats, ETH_stats, LTC_stats, XRP_stats, BCH_stats)
+)
+
+crypto_stats %>%
+  kbl(caption = "Descriptive Statistics") %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+```
+
+# PART 3: Data modelling (GARCH, SS-KF and NNAR)
+
+##3.1- GARCH(1,1) model
+
+We create a function to fit a GARCH(1,1) model on the log-returns and to compute the one-step forecast as well as the mae and the rmse. 
+
+```{r,echo=TRUE}
+garch11_fit <- function(returns,observed_volatility){
+  garch_model <- ugarchspec(mean.model=list(armaOrder=c(0,0)),
+                       variance.model=list(garchOrder=c(1,1)),
+                       distribution.model = "std")
+  
+  fitted_model <- ugarchfit(data=returns, spec=garch_model)
+  
+  fitted_values <- sigma(fitted_model)
+  
+  prediction <- ugarchforecast(fitted_model, data=BTC_returns, n.ahead=1)
+  
+  prediction <- sigma(prediction)
+  
+  residuals <- as.vector(observed_volatility) - as.vector(sigma(fitted_model))
+  
+  mae<-mean(abs(residuals))
+  
+  rmse<-sqrt(mean(residuals^2))
+  
+  return(list(
+    Model = fitted_model,
+    Fitted_values = fitted_values,
+    Residuals = residuals,
+    Forecast = prediction,
+    MAE = mae,
+    RMSE = rmse
+  ))
+}
+```
+
+The model is fitted on the log-returns of **BTC/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r,echo=TRUE}
+BTC_garch_info <- garch11_fit(BTC_returns,BTC_observed_volatility)
+```
+
+The model is fitted on the log-returns of **ETH/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, echo=TRUE}
+ETH_garch_info <- garch11_fit(ETH_returns,ETH_observed_volatility)
+```
+
+The model is fitted on the log-returns of **LTC/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, echo=TRUE}
+LTC_garch_info <- garch11_fit(LTC_returns,LTC_observed_volatility)
+```
+
+The model is fitted on the log-returns of **XRP/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, echo=TRUE}
+XRP_garch_info <- garch11_fit(XRP_returns,XRP_observed_volatility)
+```
+
+The model is fitted on the log-returns of **BCH/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, echo=TRUE}
+BCH_garch_info <- garch11_fit(BCH_returns,BCH_observed_volatility)
+```
+
+##3.2- ARIMA State-Space model with Kalman Filter 
+
+Since the optimal integration order $d$ is determned by using the repeated Kwiatkowski–Phillips–Schmidt–Shin (KPSS) test, we construct a function to apply this algorithm. 
+
+```{r,echo=TRUE}
+optimal_integration_order <- function(time_series, max_order = 2, alpha = 0.05) {
+  
+  order_of_integration <- 0
+  
+  kpss_test <- function(series) {
+    test_result <- kpss.test(series, null = "Level")
+    return(test_result$p.value)
+  }
+  
+  p_value <- kpss_test(time_series)
+  if (p_value < alpha) {
+    for (order in 1:max_order) {
+      diff_series <- diff(time_series, differences = order)
+      p_value <- kpss_test(diff_series)
+      if (p_value >= alpha) {
+        order_of_integration <- order
+        break
+      }
+    }
+  }
+  
+  return(order_of_integration)
+}
+```
+
+Now we can create a function to fit an arima state space model with a Kalman Filter on the log-returns and to compute the one-step forecast as well as the mae and the rmse of the model.
+
+```{r, echo=TRUE}
+ss_kf_fit <- function(returns,observed_volatility){
+  
+  optimal_d <- optimal_integration_order(returns,max_order=3,alpha=0.01)
+  
+  model = auto.arima(as.vector(returns),d=optimal_d)
+  
+  ar_coef <- model$coef[grep("^ar", names(model$coef))]
+  
+  ss_model_arima <- SSModel(observed_volatility ~ SSMarima(d=optimal_d, ar=ar_coef))
+  
+  out<- KFS(ss_model_arima)
+  
+  fitted_values <- as.matrix(out$a)
+  
+  fitted_values <- fitted_values[2:10001,1]
+  
+  prediction <- coredata((predict(out$model, n.ahead=1)))
+  
+  residuals <- as.vector(observed_volatility) - fitted_values
+  
+  mae<-mean(abs(residuals))
+  
+  rmse<-sqrt(mean(residuals^2))
+  
+  return(list(
+        Model = ss_model_arima,
+        Fitted_values = fitted_values,
+        Residuals = residuals,
+        Forecast = prediction,
+        MAE = mae,
+        RMSE = rmse
+  ))
+}
+```
+
+The model is fitted on the log-returns of **BTC/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, warning=FALSE}
+BTC_SSKF_info <- ss_kf_fit(BTC_returns,BTC_observed_volatility)
+```
+
+The model is fitted on the log-returns of **ETH/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r echo=TRUE, warning=FALSE}
+ETH_SSKF_info <- ss_kf_fit(ETH_returns,ETH_observed_volatility)
+```
+
+The model is fitted on the log-returns of **LTC/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r echo=TRUE, warning=FALSE}
+LTC_SSKF_info <- ss_kf_fit(LTC_returns,LTC_observed_volatility)
+```
+
+The model is fitted on the log-returns of **XRP/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r echo=TRUE, warning=FALSE}
+XRP_SSKF_info <- ss_kf_fit(XRP_returns,XRP_observed_volatility)
+```
+
+The model is fitted on the log-returns of **BCH/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r echo=TRUE, warning=FALSE}
+BCH_SSKF_info <- ss_kf_fit(BCH_returns,BCH_observed_volatility)
+```
+
+##3.4- Neural Network AutoRegressive model (NNAR)
+
+We create a function to fit a NNAR model on the log-returns and to compute the one-step forecast as well as the mae and the rmse.
+
+```{r,echo=TRUE}
+
+nnar_fit <- function(returns,observed_volatility){
+  
+  fitted_model <- nnetar(observed_volatility)
+  
+  prediction <- coredata(forecast(fitted_model, h=1)$mean)
+  
+  residuals <- as.vector(na.omit(fitted_model$residuals))
+  
+  mae<-mean(abs(residuals))
+  
+  rmse<-sqrt(mean(residuals^2))
+  
+  return(list(
+        Model = fitted_model,
+        Residuals = residuals,
+        Forecast = prediction,
+        MAE = mae,
+        RMSE = rmse
+  ))
+}
+
+```
+
+The model is fitted on the log-returns of **BTC/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r,echo=TRUE}
+BTC_NNAR_info <- nnar_fit(BTC_returns,BTC_observed_volatility)
+```
+
+The model is fitted on the log-returns of **ETH/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, echo=TRUE}
+ETH_NNAR_info <- nnar_fit(ETH_returns,ETH_observed_volatility)
+```
+
+The model is fitted on the log-returns of **LTC/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, echo=TRUE}
+LTC_NNAR_info <- nnar_fit(LTC_returns,LTC_observed_volatility)
+```
+
+The model is fitted on the log-returns of **XRP/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r echo=TRUE, warning=FALSE}
+XRP_NNAR_info <- nnar_fit(XRP_returns,XRP_observed_volatility)
+```
+
+The model is fitted on the log-returns of **BCH/USD**, used to make a one-step forecast and the mae/rmse.
+
+```{r, echo=TRUE}
+BCH_NNAR_info <- nnar_fit(BCH_returns,BCH_observed_volatility)
+```
+
+##3.5-  Models performance comparison
+
+###3.5.1- RMSE & MAE
+
+```{r, echo=TRUE}
+data <- data.frame(
+  MODEL = c("GARCH (1,1)", "ARIMA-SS-KF", "NNAR"),
+  "BTC RMSE" = c(BTC_garch_info$RMSE, BTC_SSKF_info$RMSE, BTC_NNAR_info$RMSE),
+  "BTC MAE" = c(BTC_garch_info$MAE, BTC_SSKF_info$MAE, BTC_NNAR_info$MAE),
+  
+  "ETH RMSE" = c(ETH_garch_info$RMSE, ETH_SSKF_info$RMSE, ETH_NNAR_info$RMSE),
+  "ETH MAE" = c(ETH_garch_info$MAE, ETH_SSKF_info$MAE, ETH_NNAR_info$MAE),
+  
+  "LTC RMSE" = c(LTC_garch_info$RMSE, LTC_SSKF_info$RMSE, LTC_NNAR_info$RMSE),
+  "LTC MAE" = c(LTC_garch_info$MAE, LTC_SSKF_info$MAE, LTC_NNAR_info$MAE),
+  
+  "XRP RMSE" = c(XRP_garch_info$RMSE, XRP_SSKF_info$RMSE, XRP_NNAR_info$RMSE),
+  "XRP MAE" = c(XRP_garch_info$MAE, XRP_SSKF_info$MAE, XRP_NNAR_info$MAE),
+  
+  "BCH RMSE" = c(BCH_garch_info$RMSE, BCH_SSKF_info$RMSE, BCH_NNAR_info$RMSE),
+  "BCH MAE" = c(BCH_garch_info$MAE, BCH_SSKF_info$MAE, BCH_NNAR_info$MAE),
+  check.names = FALSE
+)
+
+kable(data, digits = 4, align = "c", caption = "Lowest RMSE and MAE values for each dataset are bolded.") %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(2:11, width = "1.5cm") %>%
+  add_header_above(c(" " = 1, "BTC" = 2, "ETH" = 2, "LTC" = 2, "XRP" = 2, "BCH" = 2)) %>%
+  row_spec(3, bold = TRUE) %>%
+  footnote(general = "Lowest RMSE and MAE values for each dataset are bolded.")
+```
+
+###3.5.2- Observed Volatility vs. Forecast Volatility Charts
+
+**BTC/USD**
+
+```{r,echo=TRUE}
+time <- seq(from = 1, to = length(BTC_observed_volatility), by = 1)
+
+# Observed volatility
+plot(BTC_observed_volatility, 
+     main = "Bitcoin Volatility Modelling", 
+     lwd = 2, 
+     col = "black", 
+     ylab = "", 
+     xlab = "")
+
+# ARIMA State-Space Model avec le filtre de Kalman
+lines(time, BTC_SSKF_info$Fitted_values, lwd = 2, col = "blue")
+
+# Modèle NNAR
+lines(time, BTC_NNAR_info$Model$fitted, lwd = 2, col = "red")
+
+# Modèle GARCH
+lines(time, BTC_garch_info$Fitted_values, lwd = 3, col = "green")
+
+# Ajout des labels pour les axes
+mtext("Time", side = 1, line = 2.5, cex = 0.8)
+mtext(expression(hat(sigma)), side = 2, line = 2.5, cex = 0.8)
+
+legend("topright",
+       legend = c("Observed Volatility", "SS-KF Volatility Forecast", "NNAR Volatility Forecast", "GARCH Volatility Forecast"), 
+       col = c("black", "blue", "red", "green"), 
+       lwd = c(2, 2, 2, 3), 
+       bty = "n",
+       cex = 0.8) 
+```
+**ETH/USD**
+
+```{r, echo=TRUE}
+time <- seq(from = 1, to = length(ETH_observed_volatility), by = 1)
+
+# Observed volatility
+plot(ETH_observed_volatility, 
+     main = "Ether Volatility Modelling", 
+     lwd = 2, 
+     col = "black", 
+     ylab = "", 
+     xlab = "")
+
+# ARIMA State-Space Model avec le filtre de Kalman
+lines(time, ETH_SSKF_info$Fitted_values, lwd = 2, col = "blue")
+
+# Modèle NNAR
+lines(time, ETH_NNAR_info$Model$fitted, lwd = 2, col = "red")
+
+# Modèle GARCH
+lines(time, ETH_garch_info$Fitted_values, lwd = 3, col = "green")
+
+# Ajout des labels pour les axes
+mtext("Time", side = 1, line = 2.5, cex = 0.8)
+mtext(expression(hat(sigma)), side = 2, line = 2.5, cex = 0.8)
+
+legend("topright",
+       legend = c("Observed Volatility", "SS-KF Volatility Forecast", "NNAR Volatility Forecast", "GARCH Volatility Forecast"), 
+       col = c("black", "blue", "red", "green"), 
+       lwd = c(2, 2, 2, 3), 
+       bty = "n",
+       cex = 0.8) 
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+time <- seq(from = 1, to = length(LTC_observed_volatility), by = 1)
+
+# Observed volatility
+plot(LTC_observed_volatility, 
+     main = "Litecoin Volatility Modelling", 
+     lwd = 2, 
+     col = "black", 
+     ylab = "", 
+     xlab = "")
+
+# ARIMA State-Space Model avec le filtre de Kalman
+lines(time, LTC_SSKF_info$Fitted_values, lwd = 2, col = "blue")
+
+# Modèle NNAR
+lines(time, LTC_NNAR_info$Model$fitted, lwd = 2, col = "red")
+
+# Modèle GARCH
+lines(time, LTC_garch_info$Fitted_values, lwd = 3, col = "green")
+
+# Ajout des labels pour les axes
+mtext("Time", side = 1, line = 2.5, cex = 0.8)
+mtext(expression(hat(sigma)), side = 2, line = 2.5, cex = 0.8)
+
+legend("topright",
+       legend = c("Observed Volatility", "SS-KF Volatility Forecast", "NNAR Volatility Forecast", "GARCH Volatility Forecast"), 
+       col = c("black", "blue", "red", "green"), 
+       lwd = c(2, 2, 2, 3), 
+       bty = "n",
+       cex = 0.8) 
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+time <- seq(from = 1, to = length(XRP_observed_volatility), by = 1)
+
+# Observed volatility
+plot(XRP_observed_volatility, 
+     main = "Ripples Volatility Modelling", 
+     lwd = 2, 
+     col = "black", 
+     ylab = "", 
+     xlab = "")
+
+# ARIMA State-Space Model avec le filtre de Kalman
+lines(time, XRP_SSKF_info$Fitted_values, lwd = 2, col = "blue")
+
+# Modèle NNAR
+lines(time, XRP_NNAR_info$Model$fitted, lwd = 2, col = "red")
+
+# Modèle GARCH
+lines(time, XRP_garch_info$Fitted_values, lwd = 3, col = "green")
+
+# Ajout des labels pour les axes
+mtext("Time", side = 1, line = 2.5, cex = 0.8)
+mtext(expression(hat(sigma)), side = 2, line = 2.5, cex = 0.8)
+
+legend("topleft",
+       legend = c("Observed Volatility", "SS-KF Volatility Forecast", "NNAR Volatility Forecast", "GARCH Volatility Forecast"), 
+       col = c("black", "blue", "red", "green"), 
+       lwd = c(2, 2, 2, 3), 
+       bty = "n",
+       cex = 0.8) 
+
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+time <- seq(from = 1, to = length(BCH_observed_volatility), by = 1)
+
+# Observed volatility
+plot(BCH_observed_volatility, 
+     main = "Bitcoin Cash Volatility Modelling", 
+     lwd = 2, 
+     col = "black", 
+     ylab = "", 
+     xlab = "")
+
+# ARIMA State-Space Model avec le filtre de Kalman
+lines(time, BCH_SSKF_info$Fitted_values, lwd = 2, col = "blue")
+
+# Modèle NNAR
+lines(time, BCH_NNAR_info$Model$fitted, lwd = 2, col = "red")
+
+# Modèle GARCH
+lines(time, BCH_garch_info$Fitted_values, lwd = 3, col = "green")
+
+# Ajout des labels pour les axes
+mtext("Time", side = 1, line = 2.5, cex = 0.8)
+mtext(expression(hat(sigma)), side = 2, line = 2.5, cex = 0.8)
+
+legend("topright",
+       legend = c("Observed Volatility", "SS-KF Volatility Forecast", "NNAR Volatility Forecast", "GARCH Volatility Forecast"), 
+       col = c("black", "blue", "red", "green"), 
+       lwd = c(2, 2, 2, 3), 
+       bty = "n",
+       cex = 0.8) 
+```
+# PART 4: Residuals study
+
+##4.1- GARCH Models residuals
+
+**BTC/USD**
+
+```{r,echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(BTC_garch_info$Residuals, type = "l", xlab="Time", ylab="Residuals", main="BTC GARCH Model Residuals")
+hist(BTC_garch_info$Residuals, main = "BTC GARCH Model Residuals Distribution", breaks=50, col="black", prob=TRUE, xlab="", ylab="")
+mtext("Frequency", side=2, line=3.5, cex=1)
+mtext("Residual", side=1, line=3.5, cex=1, outer=FALSE)
+acf(BTC_garch_info$Residuals, main = "ACF of BTC GARCH Model Residuals", cex.axis=1, cex.lab=1)
+pacf(BTC_garch_info$Residuals, main = "PACF of BTC GARCH Model Residuals", cex.axis=1, cex.lab=1)
+
+par(mfrow = c(1, 1))
+```
+**ETH/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(ETH_garch_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "ETH GARCH Model Residuals")
+hist(ETH_garch_info$Residuals, main = "ETH GARCH Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(ETH_garch_info$Residuals, main = "ACF of ETH GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(ETH_garch_info$Residuals, main = "PACF of ETH GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(LTC_garch_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "LTC GARCH Model Residuals")
+hist(LTC_garch_info$Residuals, main = "LTC GARCH Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(LTC_garch_info$Residuals, main = "ACF of LTC GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(LTC_garch_info$Residuals, main = "PACF of LTC GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(XRP_garch_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "XRP GARCH Model Residuals")
+hist(XRP_garch_info$Residuals, main = "XRP GARCH Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(XRP_garch_info$Residuals, main = "ACF of XRP GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(XRP_garch_info$Residuals, main = "PACF of XRP GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(BCH_garch_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "BCH GARCH Model Residuals")
+hist(BCH_garch_info$Residuals, main = "BCH GARCH Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(BCH_garch_info$Residuals, main = "ACF of BCH GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(BCH_garch_info$Residuals, main = "PACF of BCH GARCH Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+##4.2- ARIMA State-Space Models with Kalman Filter residuals
+
+**BTC/USD**
+
+```{r,echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(BTC_SSKF_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "BTC SSKF Model Residuals")
+hist(BTC_SSKF_info$Residuals, main = "BTC SSKF Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(BTC_SSKF_info$Residuals, main = "ACF of BTC SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(BTC_SSKF_info$Residuals, main = "PACF of BTC SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**ETH/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(ETH_SSKF_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "ETH SSKF Model Residuals")
+hist(ETH_SSKF_info$Residuals, main = "ETH SSKF Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(ETH_SSKF_info$Residuals, main = "ACF of ETH SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(ETH_SSKF_info$Residuals, main = "PACF of ETH SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(LTC_SSKF_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "LTC SSKF Model Residuals")
+hist(LTC_SSKF_info$Residuals, main = "LTC SSKF Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(LTC_SSKF_info$Residuals, main = "ACF of LTC SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(LTC_SSKF_info$Residuals, main = "PACF of LTC SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(XRP_SSKF_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "XRP SSKF Model Residuals")
+hist(XRP_SSKF_info$Residuals, main = "XRP SSKF Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(XRP_SSKF_info$Residuals, main = "ACF of XRP SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(XRP_SSKF_info$Residuals, main = "PACF of XRP SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(BCH_SSKF_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "BCH SSKF Model Residuals")
+hist(BCH_SSKF_info$Residuals, main = "BCH SSKF Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(BCH_SSKF_info$Residuals, main = "ACF of BCH SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(BCH_SSKF_info$Residuals, main = "PACF of BCH SSKF Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+##4.3- Neural Network Autoregressive Models residuals
+
+**BTC/USD**
+
+```{r,echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(BTC_NNAR_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "BTC NNAR Model Residuals")
+hist(BTC_NNAR_info$Residuals, main = "BTC NNAR Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(BTC_NNAR_info$Residuals, main = "ACF of BTC NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(BTC_NNAR_info$Residuals, main = "PACF of BTC NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**ETH/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(ETH_NNAR_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "ETH NNAR Model Residuals")
+hist(ETH_NNAR_info$Residuals, main = "ETH NNAR Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(ETH_NNAR_info$Residuals, main = "ACF of ETH NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(ETH_NNAR_info$Residuals, main = "PACF of ETH NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(LTC_NNAR_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "LTC NNAR Model Residuals")
+hist(LTC_NNAR_info$Residuals, main = "LTC NNAR Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(LTC_NNAR_info$Residuals, main = "ACF of LTC NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(LTC_NNAR_info$Residuals, main = "PACF of LTC NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(XRP_NNAR_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "XRP NNAR Model Residuals")
+hist(XRP_NNAR_info$Residuals, main = "XRP NNAR Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(XRP_NNAR_info$Residuals, main = "ACF of XRP NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(XRP_NNAR_info$Residuals, main = "PACF of XRP NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+par(mfrow = c(2, 2))
+
+plot(BCH_NNAR_info$Residuals, type = "l", xlab = "Time", ylab = "Residuals", main = "BCH NNAR Model Residuals")
+hist(BCH_NNAR_info$Residuals, main = "BCH NNAR Model Residuals Distribution", breaks = 50, col = "black", prob = TRUE, xlab = "", ylab = "")
+mtext("Frequency", side = 2, line = 3.5, cex = 1)
+mtext("Residual", side = 1, line = 3.5, cex = 1, outer = FALSE)
+acf(BCH_NNAR_info$Residuals, main = "ACF of BCH NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+pacf(BCH_NNAR_info$Residuals, main = "PACF of BCH NNAR Model Residuals", cex.axis = 1, cex.lab = 1)
+
+par(mfrow = c(1, 1))
+```
+# PART 5: Alpha cut for Value-at-Risk
+
+## 5.1- GARCH Models VaR
+
+We fix the order of the quantile of the t-student distribution used to compute the Value-at-Risk at 1%.
+
+```{r, echo=TRUE}
+alpha <- 0.01
+alpha_confidence_interval<-seq(from=0.01, to=1, by=0.01)
+l<-length(alpha_confidence_interval)
+normal_critical_values<-rep(0, l)
+for(i in 1:l) normal_critical_values[i]=qnorm(1-alpha_confidence_interval[i]/2, mean=0, sd=1)
+```
+
+**BTC/USD**
+
+```{r,echo=TRUE}
+BTC_degree_freedom <- coef(BTC_garch_info$Model)["shape"]
+BTC_critical_value <- qt(alpha, df=BTC_degree_freedom)
+BTC_garch_VaR <- 10000*sqrt((BTC_degree_freedom-2)/BTC_degree_freedom)*BTC_garch_info$Forecast*BTC_critical_value
+
+BTC_SE_residuals_garch <- BTC_garch_info$RMSE/sqrt(10000)
+```
+
+**ETH/USD**
+
+```{r, echo=TRUE}
+ETH_degree_freedom <- coef(ETH_garch_info$Model)["shape"]
+ETH_critical_value <- qt(alpha, df=ETH_degree_freedom)
+ETH_garch_VaR <- 10000*sqrt((ETH_degree_freedom-2)/ETH_degree_freedom)*ETH_garch_info$Forecast*ETH_critical_value
+
+ETH_SE_residuals_garch <- ETH_garch_info$RMSE/sqrt(10000)
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+LTC_degree_freedom <- coef(LTC_garch_info$Model)["shape"]
+LTC_critical_value <- qt(alpha, df=LTC_degree_freedom)
+LTC_garch_VaR <- 10000*sqrt((LTC_degree_freedom-2)/LTC_degree_freedom)*LTC_garch_info$Forecast*LTC_critical_value
+
+LTC_SE_residuals_garch <- LTC_garch_info$RMSE/sqrt(10000)
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+XRP_degree_freedom <- coef(XRP_garch_info$Model)["shape"]
+XRP_critical_value <- qt(alpha, df=XRP_degree_freedom)
+XRP_garch_VaR <- 10000*sqrt((XRP_degree_freedom-2)/XRP_degree_freedom)*XRP_garch_info$Forecast*XRP_critical_value
+
+XRP_SE_residuals_garch <- XRP_garch_info$RMSE/sqrt(10000)
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+BCH_degree_freedom <- coef(BCH_garch_info$Model)["shape"]
+BCH_critical_value <- qt(alpha, df=BCH_degree_freedom)
+BCH_garch_VaR <- 10000*sqrt((BCH_degree_freedom-2)/BCH_degree_freedom)*BCH_garch_info$Forecast*BCH_critical_value
+
+BCH_SE_residuals_garch <- BCH_garch_info$RMSE/sqrt(10000)
+```
+
+##5.2- ARIMA State-Space Models with Kalman Filter VaR
+
+**BTC/USD**
+
+```{r,echo=TRUE}
+BTC_SSKF_VaR <- as.vector(10000*sqrt((BTC_degree_freedom-2)/BTC_degree_freedom)*BTC_SSKF_info$Forecast*BTC_critical_value)
+
+BTC_SE_residuals_SSKF <- BTC_SSKF_info$RMSE/sqrt(10000)
+```
+
+**ETH/USD**
+
+```{r, echo=TRUE}
+ETH_SSKF_VaR <- as.vector(10000*sqrt((ETH_degree_freedom-2)/ETH_degree_freedom)*ETH_SSKF_info$Forecast*ETH_critical_value)
+
+ETH_SE_residuals_SSKF <- ETH_SSKF_info$RMSE/sqrt(10000)
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+LTC_SSKF_VaR <- as.vector(10000*sqrt((LTC_degree_freedom-2)/LTC_degree_freedom)*LTC_SSKF_info$Forecast*LTC_critical_value)
+
+LTC_SE_residuals_SSKF <- LTC_SSKF_info$RMSE/sqrt(10000)
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+XRP_SSKF_VaR <- as.vector(10000*sqrt((XRP_degree_freedom-2)/XRP_degree_freedom)*XRP_SSKF_info$Forecast*XRP_critical_value)
+
+XRP_SE_residuals_SSKF <- XRP_SSKF_info$RMSE/sqrt(10000)
+```
+
+**BCH/USD**
+
+```{r, echo=FALSE}
+BCH_SSKF_VaR <- as.vector(10000*sqrt((BCH_degree_freedom-2)/BCH_degree_freedom)*BCH_SSKF_info$Forecast*BCH_critical_value)
+
+BCH_SE_residuals_SSKF <- BCH_SSKF_info$RMSE/sqrt(10000)
+```
+
+##5.2- Neural Network Autoregressive Models VaR
+
+**BTC/USD**
+
+```{r, echo=TRUE}
+BTC_NNAR_VaR<--10000*sqrt((BTC_degree_freedom-2)/BTC_degree_freedom)*BTC_NNAR_info$Forecast*BTC_critical_value
+
+BTC_SE_residuals_NNAR <- BTC_NNAR_info$RMSE/sqrt(10000)
+```
+
+**ETH/USD**
+
+```{r, echo=TRUE}
+ETH_NNAR_VaR<--10000*sqrt((ETH_degree_freedom-2)/ETH_degree_freedom)*ETH_NNAR_info$Forecast*ETH_critical_value
+
+ETH_SE_residuals_NNAR <- ETH_NNAR_info$RMSE/sqrt(10000)
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+LTC_NNAR_VaR<--10000*sqrt((LTC_degree_freedom-2)/LTC_degree_freedom)*LTC_NNAR_info$Forecast*LTC_critical_value
+
+LTC_SE_residuals_NNAR <- LTC_NNAR_info$RMSE/sqrt(10000)
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+XRP_NNAR_VaR<--10000*sqrt((XRP_degree_freedom-2)/XRP_degree_freedom)*XRP_NNAR_info$Forecast*XRP_critical_value
+
+XRP_SE_residuals_NNAR <- XRP_NNAR_info$RMSE/sqrt(10000)
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+BCH_NNAR_VaR<--10000*sqrt((BCH_degree_freedom-2)/BCH_degree_freedom)*BCH_NNAR_info$Forecast*BCH_critical_value
+
+BCH_SE_residuals_NNAR <- BCH_NNAR_info$RMSE/sqrt(10000)
+```
+
+##5.3- Volatility forecast confidence interval
+
+We create a function to compute the confidence interval of the volatility forecast of the different models and display them on a single chart to compare the accuracy of the models. 
+
+```{r, echo=TRUE}
+
+volitility_confidence_interval<-function(volatilities,standard_errors,name){
+
+  interval_GC<-as.data.frame(matrix(0, ncol=2, nrow=l))
+  colnames(interval_GC)<-c("lower", "upper")
+  rownames(interval_GC)<-as.character(percent(1-alpha_confidence_interval))
+  
+  interval_NNAR<-as.data.frame(matrix(0, ncol=2, nrow=l))
+  colnames(interval_NNAR)<-c("lower", "upper")
+  rownames(interval_NNAR)<-as.character(percent(1-alpha_confidence_interval))
+  
+  interval_SSKF<-as.data.frame(matrix(0, ncol=2, nrow=l))
+  colnames(interval_SSKF)<-c("lower", "upper")
+  rownames(interval_SSKF)<-as.character(percent(1-alpha_confidence_interval))
+  
+  mean<-(volatilities[1]+volatilities[2]+volatilities[3])/3
+
+  for(i in 1:l){
+    interval_GC[i, ]<-c(mean-normal_critical_values[i]*standard_errors[1],  
+                        mean+normal_critical_values[i]*standard_errors[1])
+    
+    interval_SSKF[i, ]<-c(mean-normal_critical_values[i]*standard_errors[2], 
+                          mean+normal_critical_values[i]*standard_errors[2])
+    
+    interval_NNAR[i, ]<-c(mean-normal_critical_values[i]*standard_errors[3], 
+                          mean+normal_critical_values[i]*standard_errors[3])
+  }
+  
+  plot(interval_GC[,1], alpha_confidence_interval, xlab=expression(sigma), type="l",
+     ylab=expression(alpha), xlim=c(min(interval_SSKF)-0.001, max(interval_SSKF)+0.001), 
+     col="yellow", main=paste("Volatility forecast confidence intervals for",name), 
+     lty=1, lwd=3)
+  
+    lines(interval_GC[, 2], alpha_confidence_interval, 
+          col="yellow", lty=1, lwd=3)
+    lines(interval_NNAR[, 1], alpha_confidence_interval, 
+          col="red", lty=2, lwd=2)
+    lines(interval_NNAR[, 2], alpha_confidence_interval, 
+          col="red", lty=2, lwd=2)
+    lines(interval_SSKF[, 1], alpha_confidence_interval, 
+          col="purple", lty=2, lwd=3)
+    lines(interval_SSKF[, 2], alpha_confidence_interval, 
+          col="purple", lty=2, lwd=3)
+
+    legend("topright",c("GARCH (1,1)","NNAR", "SS-KF"),
+          lty=c(1,1,2),lwd=c(3,3,3),pt.cex=0.9, 
+          col=c("yellow","red","purple"), cex=0.5)
+    
+    return(c(
+      interval_GC,
+      interval_SSKF,
+      interval_NNAR
+    ))
+}
+```
+
+**BTC/USD**
+
+```{r, echo=TRUE}
+BTC_volatilities<-c(BTC_garch_info$Forecast,
+                    BTC_SSKF_info$Forecast,
+                    BTC_NNAR_info$Forecast)
+
+BTC_standard_errors<-c(BTC_SE_residuals_garch,
+                       BTC_SE_residuals_SSKF,
+                       BTC_SE_residuals_NNAR)
+
+BTC_volatility_forecast_CI <- volitility_confidence_interval(BTC_volatilities,BTC_standard_errors,"Bitcoin")
+```
+
+```{r, echo=TRUE}
+ETH_volatilities<-c(ETH_garch_info$Forecast,
+                    ETH_SSKF_info$Forecast,
+                    ETH_NNAR_info$Forecast)
+
+ETH_standard_errors<-c(ETH_SE_residuals_garch,
+                       ETH_SE_residuals_SSKF,
+                       ETH_SE_residuals_NNAR)
+
+ETH_volatility_forecast_CI <- volitility_confidence_interval(ETH_volatilities,ETH_standard_errors,"Ether")
+
+```
+```{r, echo=FALSE}
+LTC_volatilities<-c(LTC_garch_info$Forecast,
+                    LTC_SSKF_info$Forecast,
+                    LTC_NNAR_info$Forecast)
+
+LTC_standard_errors<-c(LTC_SE_residuals_garch,
+                       LTC_SE_residuals_SSKF,
+                       LTC_SE_residuals_NNAR)
+
+LTC_volatility_forecast_CI <- volitility_confidence_interval(LTC_volatilities,LTC_standard_errors,"Litecoin")
+```
+
+```{r, echo=TRUE}
+XRP_volatilities<-c(XRP_garch_info$Forecast,
+                    XRP_SSKF_info$Forecast,
+                    XRP_NNAR_info$Forecast)
+
+XRP_standard_errors<-c(XRP_SE_residuals_garch,
+                       XRP_SE_residuals_SSKF,
+                       XRP_SE_residuals_NNAR)
+
+XRP_volatility_forecast_CI <- volitility_confidence_interval(XRP_volatilities,XRP_standard_errors,"Ripples")
+```
+```{r, echo=FALSE}
+BCH_volatilities<-c(BCH_garch_info$Forecast,
+                    BCH_SSKF_info$Forecast,
+                    BCH_NNAR_info$Forecast)
+
+BCH_standard_errors<-c(BCH_SE_residuals_garch,
+                       BCH_SE_residuals_SSKF,
+                       BCH_SE_residuals_NNAR)
+
+BCH_volatility_forecast_CI <- volitility_confidence_interval(BCH_volatilities,BCH_standard_errors,"Bitcoin Cash")
+```
+
+
+##5.4- Value-at-Risk forecast confiance interval
+
+With the same logic of the previous section, we construct a function to compute the confidence interval of the Value-at-Risk forecast of the different models and display them on a single chart to compare the accuracy of the models.
+
+```{r, echo=TRUE}
+VaR_confidence_interval<-function(VaR,standard_errors,intervals,critical_value,freedom_degree,name){
+  
+  interval_GC_VaR<-as.data.frame(matrix(0, ncol=2, nrow=l))
+  colnames(interval_GC_VaR)<-c("lower", "upper")
+  rownames(interval_GC_VaR)<-as.character(percent(1-alpha_confidence_interval))
+  
+  interval_NNAR_VaR<-as.data.frame(matrix(0, ncol=2, nrow=l))
+  colnames(interval_NNAR_VaR)<-c("lower", "upper")
+  rownames(interval_NNAR_VaR)<-as.character(percent(1-alpha_confidence_interval))
+  
+  interval_SSKF_VaR<-as.data.frame(matrix(0, ncol=2, nrow=l))
+  colnames(interval_SSKF_VaR)<-c("lower", "upper")
+  rownames(interval_SSKF_VaR)<-as.character(percent(1-alpha_confidence_interval))
+  
+  mean<-(VaR[1]+VaR[2]+VaR[3])/3
+
+  for(i in 1:l){
+    interval_GC_VaR[i,]<-c(intervals[[1]][i]*(-10000)*critical_value*sqrt((freedom_degree-2)/freedom_degree),
+                           intervals[[2]][i]*(-10000)*critical_value*sqrt((freedom_degree-2)/freedom_degree))
+    
+    interval_SSKF_VaR[i,]<-c(intervals[[3]][i]*(-10000)*critical_value*sqrt((freedom_degree-2)/freedom_degree),
+                             intervals[[4]][i]*(-10000)*critical_value*sqrt((freedom_degree-2)/freedom_degree))
+    
+    interval_NNAR_VaR[i,]<-c(intervals[[5]][i]*(-10000)*critical_value*sqrt((freedom_degree-2)/freedom_degree),
+                             intervals[[6]][i]*(-10000)*critical_value*sqrt((freedom_degree-2)/freedom_degree))
+  }
+  
+  plot(interval_GC_VaR[,1], alpha_confidence_interval, xlab=expression(sigma), type="l",
+     ylab=expression(alpha), xlim=c(min(interval_SSKF_VaR)-0.001, max(interval_SSKF_VaR)+0.001), 
+     col="yellow", main=paste("Value-at-Risk forecast confidence intervals for",name), 
+     lty=1, lwd=3)
+  
+    lines(interval_GC_VaR[, 2], alpha_confidence_interval, 
+          col="yellow", lty=1, lwd=3)
+    lines(interval_NNAR_VaR[, 1], alpha_confidence_interval, 
+          col="red", lty=2, lwd=2)
+    lines(interval_NNAR_VaR[, 2], alpha_confidence_interval, 
+          col="red", lty=2, lwd=2)
+    lines(interval_SSKF_VaR[, 1], alpha_confidence_interval, 
+          col="purple", lty=2, lwd=3)
+    lines(interval_SSKF_VaR[, 2], alpha_confidence_interval, 
+          col="purple", lty=2, lwd=3)
+
+    legend("topright",c("GARCH (1,1)","NNAR", "SS-KF"),
+          lty=c(1,1,2),lwd=c(3,3,3),pt.cex=0.9, 
+          col=c("yellow","red","purple"), cex=0.5)
+}
+```
+
+**BTC/USD**
+
+```{r, echo=TRUE}
+BTC_VaR<-c(BTC_garch_VaR,
+           BTC_SSKF_VaR,
+           BTC_NNAR_VaR)
+
+BTC_SE<-c(BTC_SE_residuals_garch,
+          BTC_SE_residuals_SSKF,
+          BTC_SE_residuals_NNAR)
+
+
+BTC_VaR_forecast_CI<-VaR_confidence_interval(BTC_VaR,
+                                             BTC_SE,
+                                             BTC_volatility_forecast_CI,
+                                             BTC_critical_value,
+                                             BTC_degree_freedom,
+                                             "Bitcoin")
+```
+
+**ETH/USD**
+
+```{r, echo=TRUE}
+ETH_VaR<-c(ETH_garch_VaR,
+           ETH_SSKF_VaR,
+           ETH_NNAR_VaR)
+
+ETH_SE<-c(ETH_SE_residuals_garch,
+          ETH_SE_residuals_SSKF,
+          ETH_SE_residuals_NNAR)
+
+
+ETH_VaR_forecast_CI<-VaR_confidence_interval(ETH_VaR,
+                                             ETH_SE,
+                                             ETH_volatility_forecast_CI,
+                                             ETH_critical_value,
+                                             ETH_degree_freedom,
+                                             "Ether")
+```
+
+**LTC/USD**
+
+```{r, echo=TRUE}
+LTC_VaR<-c(LTC_garch_VaR,
+           LTC_SSKF_VaR,
+           LTC_NNAR_VaR)
+
+LTC_SE<-c(LTC_SE_residuals_garch,
+          LTC_SE_residuals_SSKF,
+          LTC_SE_residuals_NNAR)
+
+
+LTC_VaR_forecast_CI<-VaR_confidence_interval(LTC_VaR,
+                                             LTC_SE,
+                                             LTC_volatility_forecast_CI,
+                                             LTC_critical_value,
+                                             LTC_degree_freedom,
+                                             "Litecoin")
+```
+
+**XRP/USD**
+
+```{r, echo=TRUE}
+XRP_VaR<-c(XRP_garch_VaR,
+           XRP_SSKF_VaR,
+           XRP_NNAR_VaR)
+
+XRP_SE<-c(XRP_SE_residuals_garch,
+          XRP_SE_residuals_SSKF,
+          XRP_SE_residuals_NNAR)
+
+
+XRP_VaR_forecast_CI<-VaR_confidence_interval(XRP_VaR,
+                                             XRP_SE,
+                                             XRP_volatility_forecast_CI,
+                                             XRP_critical_value,
+                                             XRP_degree_freedom,
+                                             "Ripples")
+```
+
+**BCH/USD**
+
+```{r, echo=TRUE}
+BCH_VaR<-c(BCH_garch_VaR,
+           BCH_SSKF_VaR,
+           BCH_NNAR_VaR)
+
+BCH_SE<-c(BCH_SE_residuals_garch,
+          BCH_SE_residuals_SSKF,
+          BCH_SE_residuals_NNAR)
+
+
+BCH_VaR_forecast_CI<-VaR_confidence_interval(BCH_VaR,
+                                             BCH_SE,
+                                             BCH_volatility_forecast_CI,
+                                             BCH_critical_value,
+                                             BCH_degree_freedom,
+                                             "Bitcoin Cash")
+```
